@@ -4,14 +4,33 @@ import hashlib, io, lzma, os, re, subprocess, tarfile, urllib.request
 
 __all__ = ["install", "env", "run", "activate"]
 
-MIRROR = os.environ.get("FABRIC_BINS_MIRROR", "http://archive.ubuntu.com/ubuntu")
-CORE = {"libc6", "libgcc-s1", "libstdc++6"} # never bundle these: they must match the base image
+DEFAULT_SUITE = "noble" # used when the host is not Ubuntu; override with install(suite=...)
+MIRRORS = ([os.environ["FABRIC_INSTALL_MIRROR"]] if os.environ.get("FABRIC_INSTALL_MIRROR") else [
+    "http://archive.ubuntu.com/ubuntu",
+    "https://mirror.math.princeton.edu/pub/ubuntu",
+    "https://azure.archive.ubuntu.com/ubuntu",
+])
+CORE = {"libc6", "libgcc-s1", "libstdc++6"}
+_good_mirror = []
 
 
 # === Helpers ===
 def _get(url):
     with urllib.request.urlopen(url, timeout=120) as r:
         return r.read()
+
+
+def _fetch(path):
+    """Download `path` from the first mirror that answers (that mirror is then tried first)."""
+    errors = []
+    for m in _good_mirror + [m for m in MIRRORS if m not in _good_mirror]:
+        try:
+            data = _get(f"{m}/{path}")
+            _good_mirror[:] = [m]
+            return data
+        except Exception as e:
+            errors.append(f"  {m}: {e}")
+    raise RuntimeError("all mirrors failed:\n" + "\n".join(errors))
 
 
 def _fields(block):
@@ -24,11 +43,16 @@ def _fields(block):
     return out
 
 
-def _suite():
-    info = dict(l.rstrip().split("=", 1) for l in open("/etc/os-release") if "=" in l)
-    if info.get("ID", "").strip('"') != "ubuntu":
-        raise RuntimeError(f"only Ubuntu runtimes are supported (found ID={info.get('ID')})")
-    return info["VERSION_CODENAME"].strip('"')
+def _suite(suite=None):
+    if suite:
+        return suite
+    try:
+        info = dict(l.rstrip().split("=", 1) for l in open("/etc/os-release") if "=" in l)
+    except OSError:
+        info = {}
+    if info.get("ID", "").strip('"') == "ubuntu":
+        return info["VERSION_CODENAME"].strip('"') # best compatibility on Ubuntu hosts
+    return DEFAULT_SUITE
 
 
 def _index(suite):
@@ -36,7 +60,7 @@ def _index(suite):
     pkgs = {}
     for pocket in (suite, f"{suite}-updates", f"{suite}-security"):
         for comp in ("main", "universe"):
-            raw = lzma.decompress(_get(f"{MIRROR}/dists/{pocket}/{comp}/binary-amd64/Packages.xz")).decode()
+            raw = lzma.decompress(_fetch(f"dists/{pocket}/{comp}/binary-amd64/Packages.xz")).decode()
             for block in raw.split("\n\n"):
                 f = _fields(block)
                 if "Package" in f:
@@ -45,7 +69,8 @@ def _index(suite):
 
 
 def _installed():
-    """Package (and virtual package) names already on the system, read from dpkg's status file."""
+    """Package (and virtual package) names already on the system, from dpkg's status file.
+    Returns just CORE on hosts without dpkg (e.g. Mariner)."""
     have = set(CORE)
     try:
         text = open("/var/lib/dpkg/status").read()
@@ -57,6 +82,17 @@ def _installed():
             have.add(f["Package"])
             have.update(p.strip().split(" ")[0] for p in f.get("Provides", "").split(","))
     return have
+
+
+def _system_libs():
+    """Sonames the dynamic linker already knows about (from `ldconfig -p`)."""
+    for exe in ("ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"):
+        try:
+            out = subprocess.run([exe, "-p"], capture_output=True, text=True).stdout
+            return {l.split()[0] for l in out.splitlines() if "=>" in l}
+        except OSError:
+            continue
+    return set()
 
 
 def _resolve(names, index, have):
@@ -80,7 +116,7 @@ def _resolve(names, index, have):
         for clause in (f.get("Pre-Depends", "") + "," + f.get("Depends", "")).split(","):
             alts = [re.split(r"[ (:]", a.strip(), maxsplit=1)[0] for a in clause.split("|") if a.strip()]
             if not alts or any(a in have for a in alts):
-                continue # nothing to do, or an alternative is already installed
+                continue                       # nothing to do, or an alternative is already installed
             todo.append(next((a for a in alts if a in index or a in provides), alts[0]))
     return out
 
@@ -104,8 +140,10 @@ def _safe(member, dest):
         return None
 
 
-def _unpack(deb, root):
-    """A .deb is an ar archive; the files live in its data.tar.* member."""
+def _unpack(deb, root, system_libs=None):
+    """A .deb is an ar archive; the files live in its data.tar.* member.
+    If `system_libs` is given and the package ships shared libraries that the system already
+    has (every versioned soname present), skip it. Returns True if unpacked."""
     if deb[:8] != b"!<arch>\n":
         raise ValueError("not a .deb")
     pos = 8
@@ -118,17 +156,25 @@ def _unpack(deb, root):
             if name.endswith(".zst"):
                 body = _unzstd(body)
             with tarfile.open(fileobj=io.BytesIO(body), mode="r:*") as tf:
+                if system_libs is not None:
+                    sonames = {os.path.basename(n) for n in tf.getnames()
+                               if re.search(r"\.so\.\d+$", n)}
+                    if sonames and sonames <= system_libs:
+                        return False
                 if hasattr(tarfile, "tar_filter"):
                     tf.extractall(root, filter=_safe) # blocks path escapes, drops setuid bits
                 else:
                     tf.extractall(root)
-            return
+            return True
     raise ValueError("no data.tar.* in .deb")
 
 
 # === Public API ===
-def install(packages, root="~/.fabric_bins", resolve=True, exclude=()):
-    """Install Ubuntu packages plus dependencies not already on the system into `root`.
+def install(packages, root="~/.fabric_install", suite=None, resolve=True, exclude=()):
+    """Install Ubuntu packages (plus dependencies the system lacks) into `root`.
+    suite: Ubuntu release to take packages from (default: the host's if Ubuntu, else "noble").
+    On hosts without dpkg, a dependency is skipped when the system already provides all of its
+    shared libraries; packages you list yourself are always unpacked.
     Returns the expanded root path."""
     root = os.path.expanduser(root)
     os.makedirs(root, exist_ok=True)
@@ -136,15 +182,19 @@ def install(packages, root="~/.fabric_bins", resolve=True, exclude=()):
     done = set(open(marker).read().split()) if os.path.exists(marker) else set()
     if set(packages) <= done:
         return root
-    index = _index(_suite())
+    index = _index(_suite(suite))
     have = _installed() | set(exclude) | done
     chosen = _resolve(packages, index, have) if resolve else [index[p] for p in packages]
+    system_libs = None if os.path.exists("/var/lib/dpkg/status") else _system_libs()
     for f in chosen:
-        print(f"fabric-install: {f['Package']} {f['Version']}")
-        deb = _get(f"{MIRROR}/{f['Filename']}")
+        deb = _fetch(f["Filename"])
         if hashlib.sha256(deb).hexdigest() != f["SHA256"]:
             raise RuntimeError(f"SHA256 mismatch for {f['Package']}")
-        _unpack(deb, root)
+        listed = f["Package"] in packages
+        if _unpack(deb, root, None if listed else system_libs):
+            print(f"fabric-install: {f['Package']} {f['Version']}")
+        else:
+            print(f"fabric-install: {f['Package']} skipped (system already provides its libraries)")
         done.add(f["Package"])
     done.update(packages)
     with open(marker, "w") as fh:
