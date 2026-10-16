@@ -73,13 +73,13 @@ Only Tesseract has been tested on Fabric so far. The rest are likely candidates,
 ### Some examples
 | Package | Use | Tested? |
 |---|---|---|
-| `tesseract-ocr` | OCR | ✅ 2026-10-16 |
-| `poppler-utils` | PDF text extraction and conversion (`pdftotext`, `pdftoppm`) | ❌ |
+| `tesseract-ocr` | OCR | ✅ Oct 2026 |
+| `poppler-utils` | PDF text extraction and conversion (`pdftotext`, `pdftoppm`) | ✅ Oct 2026 |
 | `ghostscript` | PDF and PostScript processing | ❌ |
 | `imagemagick` | Image conversion and editing | ❌ |
 | `ffmpeg` | Audio and video conversion | ❌ |
-| `graphviz` | Rendering diagrams (`dot`) | ❌ |
-| `pandoc` | Converting between document formats | ❌ |
+| `graphviz` | Rendering diagrams (`dot`) | ✅ Oct 2026 |
+| `pandoc` | Converting between document formats | ✅ Oct 2026 |
 | `antiword`, `catdoc` | Reading legacy `.doc` files | ❌ |
 | `libnss3`, `libatk1.0-0`, and others | Headless Chromium -> running Playwright browsers | ❌ |
 
