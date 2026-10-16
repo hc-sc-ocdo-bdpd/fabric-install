@@ -4,7 +4,7 @@ import hashlib, io, lzma, os, re, subprocess, tarfile, urllib.request
 
 __all__ = ["install", "env", "run", "activate"]
 
-DEFAULT_SUITE = "noble" # used when the host is not Ubuntu; override with install(suite=...)
+DEFAULT_SUITE = "jammy" # used when the host is not Ubuntu; override with install(suite=...)
 MIRRORS = ([os.environ["FABRIC_INSTALL_MIRROR"]] if os.environ.get("FABRIC_INSTALL_MIRROR") else [
     "http://archive.ubuntu.com/ubuntu",
     "https://mirror.math.princeton.edu/pub/ubuntu",
