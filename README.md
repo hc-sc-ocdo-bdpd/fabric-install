@@ -66,21 +66,17 @@ print(result.stdout)
 
 ## Use cases
 
-Anything packaged for Ubuntu that works as a command-line tool or shared library. 
+Anything packaged for Ubuntu that works as a command-line tool or shared library. Packages that need a running service or root-level setup won't work.
 
-Only Tesseract has been tested on Fabric so far. The rest are likely candidates, so check each one before relying on it.
-
-### Some examples
+### Some possible examples
 | Package | Use | Tested? |
 |---|---|---|
 | `tesseract-ocr` | OCR | ✅ Oct 2026 |
-| `poppler-utils` | PDF text extraction and conversion (`pdftotext`, `pdftoppm`) | ✅ Oct 2026 |
 | `ghostscript` | PDF and PostScript processing | ❌ |
+| `poppler-utils` | PDF text extraction and conversion (`pdftotext`, `pdftoppm`) | ✅ Oct 2026 |
 | `imagemagick` | Image conversion and editing | ❌ |
 | `ffmpeg` | Audio and video conversion | ❌ |
 | `graphviz` | Rendering diagrams (`dot`) | ✅ Oct 2026 |
 | `pandoc` | Converting between document formats | ✅ Oct 2026 |
 | `antiword`, `catdoc` | Reading legacy `.doc` files | ❌ |
 | `libnss3`, `libatk1.0-0`, and others | Headless Chromium -> running Playwright browsers | ❌ |
-
-**Limits:** Ubuntu packages only, and packages that need a running service or root-level setup won't work.
