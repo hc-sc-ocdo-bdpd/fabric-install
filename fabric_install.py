@@ -1,6 +1,6 @@
 """fabric-install: download Ubuntu .deb packages (+ dependencies), unpack them into a user
 directory without root, and run them with a scoped environment."""
-import hashlib, io, lzma, os, re, subprocess, tarfile, urllib.request
+import hashlib, io, lzma, os, re, subprocess, tarfile, time, urllib.request
 
 __all__ = ["install", "env", "run", "activate"]
 
@@ -15,20 +15,41 @@ _good_mirror = []
 
 
 # === Helpers ===
-def _get(url):
-    with urllib.request.urlopen(url, timeout=120) as r:
-        return r.read()
+def _get(url, deadline=None):
+    """Download `url`. If `deadline` (a time.monotonic() value) is given, read the body in chunks
+    and raise TimeoutError as soon as the deadline passes, even mid-download."""
+    if deadline is None:
+        with urllib.request.urlopen(url, timeout=120) as r:
+            return r.read()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError(f"download time limit exceeded: {url}")
+    with urllib.request.urlopen(url, timeout=min(120, remaining)) as r:
+        chunks = []
+        while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"download time limit exceeded: {url}")
+            chunk = r.read(64 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
 
 
-def _fetch(path):
-    """Download `path` from the first mirror that answers (that mirror is then tried first)."""
+def _fetch(path, deadline=None):
+    """Download `path` from the first mirror that answers (that mirror is then tried first).
+    `deadline` covers all mirrors: once it passes, TimeoutError is raised instead of trying the next one."""
     errors = []
     for m in _good_mirror + [m for m in MIRRORS if m not in _good_mirror]:
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError(f"download time limit exceeded for {path}:\n" + "\n".join(errors))
         try:
-            data = _get(f"{m}/{path}")
+            data = _get(f"{m}/{path}", deadline)
             _good_mirror[:] = [m]
             return data
         except Exception as e:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"download time limit exceeded for {path} (at {m}: {e})") from e
             errors.append(f"  {m}: {e}")
     raise RuntimeError("all mirrors failed:\n" + "\n".join(errors))
 
@@ -116,7 +137,7 @@ def _resolve(names, index, have):
         for clause in (f.get("Pre-Depends", "") + "," + f.get("Depends", "")).split(","):
             alts = [re.split(r"[ (:]", a.strip(), maxsplit=1)[0] for a in clause.split("|") if a.strip()]
             if not alts or any(a in have for a in alts):
-                continue                       # nothing to do, or an alternative is already installed
+                continue
             todo.append(next((a for a in alts if a in index or a in provides), alts[0]))
     return out
 
@@ -170,9 +191,12 @@ def _unpack(deb, root, system_libs=None):
 
 
 # === Public API ===
-def install(packages, root="~/.fabric_install", suite=None, resolve=True, exclude=()):
+def install(packages, root="~/.fabric_install", suite=None, resolve=True, exclude=(), download_timeout=300):
     """Install Ubuntu packages (plus dependencies the system lacks) into `root`.
     suite: Ubuntu release to take packages from (default: the host's if Ubuntu, else "noble").
+    download_timeout: max seconds to download each package (across all mirrors); raises
+    TimeoutError if exceeded. None disables the limit. Progress is saved after each package,
+    so a re-run resumes where it stopped.
     On hosts without dpkg, a dependency is skipped when the system already provides all of its
     shared libraries; packages you list yourself are always unpacked.
     Returns the expanded root path."""
@@ -182,12 +206,18 @@ def install(packages, root="~/.fabric_install", suite=None, resolve=True, exclud
     done = set(open(marker).read().split()) if os.path.exists(marker) else set()
     if set(packages) <= done:
         return root
+
+    def save():
+        with open(marker, "w") as fh:
+            fh.write("\n".join(sorted(done)))
+
     index = _index(_suite(suite))
     have = _installed() | set(exclude) | done
     chosen = _resolve(packages, index, have) if resolve else [index[p] for p in packages]
     system_libs = None if os.path.exists("/var/lib/dpkg/status") else _system_libs()
     for f in chosen:
-        deb = _fetch(f["Filename"])
+        deadline = None if download_timeout is None else time.monotonic() + download_timeout
+        deb = _fetch(f["Filename"], deadline)
         if hashlib.sha256(deb).hexdigest() != f["SHA256"]:
             raise RuntimeError(f"SHA256 mismatch for {f['Package']}")
         listed = f["Package"] in packages
@@ -196,9 +226,9 @@ def install(packages, root="~/.fabric_install", suite=None, resolve=True, exclud
         else:
             print(f"fabric-install: {f['Package']} skipped (system already provides its libraries)")
         done.add(f["Package"])
+        save()
     done.update(packages)
-    with open(marker, "w") as fh:
-        fh.write("\n".join(sorted(done)))
+    save()
     return root
 
 
