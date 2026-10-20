@@ -12,7 +12,7 @@ Downloads Ubuntu packages and their dependencies, unpacks them into a user direc
 
 | Function | What it does |
 |---|---|
-| `fi.install(packages, root="~/.fabric_install", suite=None, resolve=True, exclude=())` | Downloads Ubuntu packages and the dependencies the system lacks, checks their SHA256, and unpacks them into `root`. Returns the path. |
+| `fi.install(packages, root="~/.fabric_install", suite=None, resolve=True, exclude=(), download_timeout=300)` | Downloads Ubuntu packages and the dependencies the system lacks, checks their SHA256, and unpacks them into `root`. Returns the path. Progress is saved after each package, so a re-run resumes where it stopped. |
 | `fi.run(cmd, root, extra=None, lib_first=True, **kwargs)` | Runs a command with the installed tree on `PATH` and `LD_LIBRARY_PATH`, for that call only. Extra keyword arguments go to `subprocess.run`. |
 | `fi.env(root, extra=None, lib_first=True, base=None)` | Returns the environment dict that `run` uses, without running anything. |
 | `fi.activate(root, extra=None, lib_first=True)` | Applies that environment to the notebook process, so child processes started afterwards see it. Already-loaded libraries are not affected. |
@@ -23,6 +23,7 @@ Downloads Ubuntu packages and their dependencies, unpacks them into a user direc
   - **Important:** Fabric's glibc is older, so you will most likely need to use `"jammy"`.
 - **`resolve=False`**: install exactly the packages you list, with no dependencies.
 - **`exclude=[...]`**: package names to skip when resolving dependencies.
+- **`download_timeout`**: maximum seconds to spend downloading each package, across all mirrors (default `300`). Raises `TimeoutError` if exceeded. Use `None` to disable the limit. Packages already installed before a timeout are kept, so re-running `fi.install` continues from where it stopped.
 - **`extra={...}`**: extra environment variables, such as `{"TESSDATA_PREFIX": "{root}/usr/share/..."}`. `{root}` is replaced with the install path.
 - **`lib_first`**: when `True` (the default), installed libraries take priority over the system's. When `False`, they only fill gaps.
 - **`FABRIC_INSTALL_MIRROR`**: environment variable that replaces the default Ubuntu mirror list.
